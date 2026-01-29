@@ -1,0 +1,44 @@
+{
+    "name": "errorvault/laravel",
+    "version": "1.2.0",
+    "description": "ErrorVault error logging package for Laravel applications",
+    "keywords": ["laravel", "error-logging", "monitoring", "debugging", "error-reporting"],
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "ErrorVault",
+            "email": "support@errorvault.com"
+        }
+    ],
+    "require": {
+        "php": "^8.1",
+        "illuminate/support": "^10.0|^11.0|^12.0",
+        "guzzlehttp/guzzle": "^7.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^8.0|^9.0|^10.0",
+        "phpunit/phpunit": "^10.0|^11.0|^12.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "ErrorVault\\Laravel\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "ErrorVault\\Laravel\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "ErrorVault\\Laravel\\ErrorVaultServiceProvider"
+            ],
+            "aliases": {
+                "ErrorVault": "ErrorVault\\Laravel\\Facades\\ErrorVault"
+            }
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
