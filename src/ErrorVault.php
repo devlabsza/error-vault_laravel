@@ -2,6 +2,7 @@
 
 namespace ErrorVault\Laravel;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Throwable;
 
@@ -10,7 +11,7 @@ class ErrorVault
     /**
      * Package version
      */
-    public const VERSION = '1.2.0';
+    public const VERSION = '1.3.0';
 
     /**
      * Configuration
@@ -26,6 +27,13 @@ class ErrorVault
      * Health monitor instance
      */
     protected ?HealthMonitor $healthMonitor = null;
+
+    /**
+     * Cache keys for connection failure tracking
+     */
+    protected const FAILURE_LOG_KEY = 'errorvault_connection_failures';
+    protected const CONSECUTIVE_FAILURES_KEY = 'errorvault_consecutive_failures';
+    protected const LAST_NOTIFICATION_KEY = 'errorvault_last_failure_notification';
 
     /**
      * Constructor
@@ -507,9 +515,15 @@ class ErrorVault
             ->timeout(5)
             ->post($this->config('api_endpoint'), $errorData);
 
-            return $response->successful();
+            if ($response->successful()) {
+                $this->clearConnectionFailures();
+                return true;
+            }
+
+            $this->logConnectionFailure('error_send', 'HTTP ' . $response->status() . ': ' . $response->body());
+            return false;
         } catch (Throwable $e) {
-            // Log locally if API request fails
+            $this->logConnectionFailure('error_send', $e->getMessage());
             logger()->error('[ErrorVault] Failed to send error: ' . $e->getMessage());
             return false;
         }
@@ -634,5 +648,182 @@ class ErrorVault
         } catch (Throwable $e) {
             return null;
         }
+    }
+
+    /**
+     * Send heartbeat/ping to keep site active
+     */
+    public function sendPing(bool $blocking = false): bool
+    {
+        if (!$this->isEnabled()) {
+            return false;
+        }
+
+        try {
+            $endpoint = str_replace('/errors', '/ping', rtrim($this->config('api_endpoint'), '/'));
+
+            $request = Http::withHeaders([
+                'X-API-Token' => $this->config('api_token'),
+                'User-Agent' => 'ErrorVault-Laravel/' . self::VERSION,
+            ])->timeout(5);
+
+            if (!$blocking) {
+                // Non-blocking for performance
+                $request->async()->post($endpoint, [
+                    'timestamp' => now()->toIso8601String(),
+                ]);
+                return true;
+            }
+
+            $response = $request->post($endpoint, [
+                'timestamp' => now()->toIso8601String(),
+            ]);
+
+            if ($response->successful()) {
+                $this->clearConnectionFailures();
+                return true;
+            }
+
+            $this->logConnectionFailure('ping', 'HTTP ' . $response->status());
+            return false;
+        } catch (Throwable $e) {
+            if ($blocking) {
+                $this->logConnectionFailure('ping', $e->getMessage());
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Log a connection failure
+     */
+    protected function logConnectionFailure(string $type, string $message): void
+    {
+        $failures = Cache::get(self::FAILURE_LOG_KEY, []);
+
+        $failures[] = [
+            'type' => $type,
+            'message' => $message,
+            'timestamp' => now()->toDateTimeString(),
+            'time' => time(),
+        ];
+
+        // Keep only last 20 failures
+        $failures = array_slice($failures, -20);
+        Cache::put(self::FAILURE_LOG_KEY, $failures, 86400); // 24 hours
+
+        // Log to Laravel log
+        logger()->error('[ErrorVault] Connection failure (' . $type . '): ' . $message);
+
+        // Track consecutive failures
+        $consecutive = (int) Cache::get(self::CONSECUTIVE_FAILURES_KEY, 0);
+        Cache::put(self::CONSECUTIVE_FAILURES_KEY, $consecutive + 1, 3600); // 1 hour
+
+        // Send admin notification after 5 consecutive failures (once per day)
+        if ($consecutive >= 4) { // Will be 5 after increment
+            $this->notifyAdminOfFailures();
+        }
+    }
+
+    /**
+     * Clear connection failures on successful connection
+     */
+    protected function clearConnectionFailures(): void
+    {
+        Cache::forget(self::CONSECUTIVE_FAILURES_KEY);
+    }
+
+    /**
+     * Get connection failure log
+     */
+    public function getConnectionFailures(): array
+    {
+        return Cache::get(self::FAILURE_LOG_KEY, []);
+    }
+
+    /**
+     * Clear all connection failure logs
+     */
+    public function clearFailureLog(): void
+    {
+        Cache::forget(self::FAILURE_LOG_KEY);
+        Cache::forget(self::CONSECUTIVE_FAILURES_KEY);
+        Cache::forget(self::LAST_NOTIFICATION_KEY);
+    }
+
+    /**
+     * Get consecutive failure count
+     */
+    public function getConsecutiveFailures(): int
+    {
+        return (int) Cache::get(self::CONSECUTIVE_FAILURES_KEY, 0);
+    }
+
+    /**
+     * Notify admin of persistent connection failures
+     */
+    protected function notifyAdminOfFailures(): void
+    {
+        // Rate limit notifications to once per day
+        $lastNotification = Cache::get(self::LAST_NOTIFICATION_KEY, 0);
+        if (time() - $lastNotification < 86400) {
+            return;
+        }
+
+        Cache::put(self::LAST_NOTIFICATION_KEY, time(), 86400);
+
+        $failures = $this->getConnectionFailures();
+        $consecutive = $this->getConsecutiveFailures();
+
+        // Log critical error
+        logger()->critical('[ErrorVault] Persistent connection failures detected', [
+            'consecutive_failures' => $consecutive,
+            'total_failures' => count($failures),
+            'recent_failures' => array_slice($failures, -5),
+        ]);
+
+        // You could also send an email notification here if needed
+        // Mail::to(config('errorvault.admin_email'))->send(new ConnectionFailureNotification($failures));
+    }
+
+    /**
+     * Test connection to ErrorVault portal
+     */
+    public function testConnection(): array
+    {
+        $results = [
+            'ping' => false,
+            'verify' => false,
+            'errors' => [],
+        ];
+
+        // Test ping endpoint
+        try {
+            $pingResult = $this->sendPing(true);
+            $results['ping'] = $pingResult;
+            if (!$pingResult) {
+                $failures = $this->getConnectionFailures();
+                $lastFailure = !empty($failures) ? end($failures) : null;
+                $results['errors']['ping'] = $lastFailure['message'] ?? 'Unknown error';
+            }
+        } catch (Throwable $e) {
+            $results['errors']['ping'] = $e->getMessage();
+        }
+
+        // Test verify endpoint
+        try {
+            $verifyResult = $this->verify();
+            $results['verify'] = $verifyResult['success'] ?? false;
+            if (!$results['verify']) {
+                $results['errors']['verify'] = $verifyResult['error'] ?? 'Unknown error';
+            }
+        } catch (Throwable $e) {
+            $results['errors']['verify'] = $e->getMessage();
+        }
+
+        $results['success'] = $results['ping'] && $results['verify'];
+        $results['timestamp'] = now()->toDateTimeString();
+
+        return $results;
     }
 }

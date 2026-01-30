@@ -343,7 +343,13 @@ class HealthMonitor
             }
 
             $response = $request->post($endpoint, $healthData);
-            return $response->successful();
+            
+            if ($response->successful()) {
+                return true;
+            }
+            
+            Log::error('[ErrorVault] Health report failed: HTTP ' . $response->status());
+            return false;
         } catch (Throwable $e) {
             Log::error('[ErrorVault] Failed to send health report: ' . $e->getMessage());
             return false;
@@ -574,5 +580,30 @@ class HealthMonitor
         $bytes /= pow(1024, $pow);
 
         return round($bytes, $precision) . ' ' . $units[$pow];
+    }
+
+    /**
+     * Get diagnostics information
+     */
+    public function getDiagnostics(): array
+    {
+        $errorVault = app(ErrorVault::class);
+        $failures = $errorVault->getConnectionFailures();
+        $consecutive = $errorVault->getConsecutiveFailures();
+
+        return [
+            'enabled' => $this->isEnabled(),
+            'health_monitoring_enabled' => $this->config['health_monitoring']['enabled'] ?? false,
+            'consecutive_failures' => $consecutive,
+            'total_failures' => count($failures),
+            'recent_failures' => array_slice($failures, -5),
+            'last_failure' => !empty($failures) ? end($failures) : null,
+            'config' => [
+                'cpu_threshold' => $this->config['health_monitoring']['cpu_load_threshold'] ?? 80,
+                'memory_threshold' => $this->config['health_monitoring']['memory_threshold'] ?? 80,
+                'request_rate_threshold' => $this->config['health_monitoring']['request_rate_threshold'] ?? 1000,
+                'report_interval' => $this->config['health_monitoring']['report_interval'] ?? 5,
+            ],
+        ];
     }
 }

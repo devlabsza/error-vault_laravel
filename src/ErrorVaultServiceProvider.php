@@ -6,6 +6,8 @@ use Illuminate\Support\ServiceProvider;
 use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Console\Scheduling\Schedule;
 use ErrorVault\Laravel\Console\SendHealthReportCommand;
+use ErrorVault\Laravel\Console\TestConnectionCommand;
+use ErrorVault\Laravel\Console\DiagnosticsCommand;
 use ErrorVault\Laravel\Http\Middleware\TrackHealthRequests;
 
 class ErrorVaultServiceProvider extends ServiceProvider
@@ -60,6 +62,8 @@ class ErrorVaultServiceProvider extends ServiceProvider
         if ($this->app->runningInConsole()) {
             $this->commands([
                 SendHealthReportCommand::class,
+                TestConnectionCommand::class,
+                DiagnosticsCommand::class,
             ]);
         }
 
@@ -85,18 +89,29 @@ class ErrorVaultServiceProvider extends ServiceProvider
      */
     protected function registerHealthSchedule(): void
     {
-        if (!config('errorvault.health_monitoring.enabled', false)) {
-            return;
-        }
-
         $this->callAfterResolving(Schedule::class, function (Schedule $schedule) {
-            $interval = (int) config('errorvault.health_monitoring.report_interval', 5);
+            // Heartbeat/ping every 5 minutes (always runs if ErrorVault is enabled)
+            if (config('errorvault.enabled', false)) {
+                $schedule->call(function () {
+                    $errorVault = app(ErrorVault::class);
+                    $errorVault->sendPing(false); // Non-blocking
+                })
+                    ->everyFiveMinutes()
+                    ->name('errorvault-heartbeat')
+                    ->withoutOverlapping()
+                    ->runInBackground();
+            }
 
-            // Use cron expression for custom interval
-            $schedule->command('errorvault:health-report --check')
-                ->cron("*/{$interval} * * * *")
-                ->withoutOverlapping()
-                ->runInBackground();
+            // Health monitoring schedule (only if health monitoring is enabled)
+            if (config('errorvault.health_monitoring.enabled', false)) {
+                $interval = (int) config('errorvault.health_monitoring.report_interval', 5);
+
+                // Use cron expression for custom interval
+                $schedule->command('errorvault:health-report --check')
+                    ->cron("*/{$interval} * * * *")
+                    ->withoutOverlapping()
+                    ->runInBackground();
+            }
         });
     }
 
