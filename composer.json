@@ -1,6 +1,6 @@
 {
     "name": "errorvault/laravel",
-    "version": "1.3.4",
+    "version": "1.4.0",
     "description": "ErrorVault error logging package for Laravel applications",
     "keywords": ["laravel", "error-logging", "monitoring", "debugging", "error-reporting"],
     "license": "MIT",

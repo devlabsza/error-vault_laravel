@@ -5,6 +5,7 @@ namespace ErrorVault\Laravel;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Console\Scheduling\Schedule;
+use ErrorVault\Laravel\Console\RunBackupCommand;
 use ErrorVault\Laravel\Console\SendHealthReportCommand;
 use ErrorVault\Laravel\Console\TestConnectionCommand;
 use ErrorVault\Laravel\Console\TestErrorCommand;
@@ -66,6 +67,7 @@ class ErrorVaultServiceProvider extends ServiceProvider
                 TestConnectionCommand::class,
                 TestErrorCommand::class,
                 DiagnosticsCommand::class,
+                RunBackupCommand::class,
             ]);
         }
 
@@ -113,6 +115,18 @@ class ErrorVaultServiceProvider extends ServiceProvider
                 // Use cron expression for custom interval
                 $schedule->command('errorvault:health-report --check')
                     ->cron("*/{$interval} * * * *")
+                    ->withoutOverlapping()
+                    ->runInBackground();
+            }
+
+            // Backup poll — if enabled, check for a pending backup on a
+            // configurable interval. Uses the artisan command (not a closure)
+            // so ->runInBackground() is safe; backups can take many minutes.
+            if (config('errorvault.enabled', false) && config('errorvault.backup.enabled', false)) {
+                $interval = max(1, (int) config('errorvault.backup.poll_interval', 5));
+                $schedule->command('errorvault:run-backup')
+                    ->cron("*/{$interval} * * * *")
+                    ->name('errorvault-backup-poll')
                     ->withoutOverlapping()
                     ->runInBackground();
             }

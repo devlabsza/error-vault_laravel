@@ -2,6 +2,20 @@
 
 All notable changes to the ErrorVault Laravel package will be documented in this file.
 
+## [1.4.0] - 2026-04-22
+
+### Added
+- **Backups.** Laravel apps can now be backed up to the ErrorVault portal via the same chunked multipart upload flow the WordPress plugin uses.
+  - New config block under `errorvault.backup` (enabled, poll_interval, chunk_size_mb, tmp_path, include_storage, exclude_paths).
+  - `php artisan errorvault:run-backup` polls `/api/v1/backups/pending` and, if a backup has been requested from the portal dashboard, dumps the database, zips the project, and uploads in chunks.
+  - Database dump prefers `mysqldump` (fast for big DBs, uses `--defaults-extra-file` so the password never appears in `ps`) and falls back to a pure-PHP export when mysqldump isn't installed or `exec`/`shell_exec` is disabled.
+  - Archive excludes `vendor`, `node_modules`, `.git`, build caches, logs, and `.env` by default. `storage/app` excluded unless `ERRORVAULT_BACKUP_INCLUDE_STORAGE=true`.
+  - Chunked upload with 3-retry exponential backoff per part, sha256 checksum, fail/abort endpoints on error paths.
+  - Service provider schedules the artisan command on the configured interval when both `ERRORVAULT_ENABLED=true` and `ERRORVAULT_BACKUP_ENABLED=true`. Uses `->runInBackground()` safely (it's a command, not a closure).
+
+### Notes
+- Running backups requires a writable `storage/app/errorvault-backup` (or wherever `ERRORVAULT_BACKUP_TMP_PATH` points) and the `ZipArchive` PHP extension (standard on most hosts).
+
 ## [1.3.4] - 2026-04-22
 
 ### Fixed

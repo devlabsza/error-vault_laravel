@@ -143,6 +143,56 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Backup
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, a scheduled command polls the ErrorVault portal every
+    | few minutes. If a backup has been requested from the dashboard, the
+    | package dumps the database, archives the project (excluding paths
+    | listed in exclude_paths), and uploads the zip via chunked multipart
+    | upload using the same API the WordPress plugin uses.
+    |
+    */
+
+    'backup' => [
+
+        // Master switch. Also gates the scheduled poll.
+        'enabled' => env('ERRORVAULT_BACKUP_ENABLED', false),
+
+        // How often (minutes) the scheduled task polls /backups/pending.
+        'poll_interval' => env('ERRORVAULT_BACKUP_POLL_INTERVAL', 5),
+
+        // Upload chunk size in megabytes. The portal's minimum part size is
+        // 5MB; don't drop below that except for the final chunk.
+        'chunk_size_mb' => env('ERRORVAULT_BACKUP_CHUNK_SIZE_MB', 5),
+
+        // Working directory for intermediate files. Must be writable. The
+        // manager creates it on demand and always cleans up afterwards.
+        'tmp_path' => env('ERRORVAULT_BACKUP_TMP_PATH', storage_path('app/errorvault-backup')),
+
+        // Whether to include storage/app in the archive. Often large and
+        // already replicated elsewhere (S3 etc.); default off.
+        'include_storage' => env('ERRORVAULT_BACKUP_INCLUDE_STORAGE', false),
+
+        // Paths (relative to base_path()) that are always excluded from the
+        // archive. Override the whole list via config publishing if you need
+        // a different set.
+        'exclude_paths' => [
+            'node_modules',
+            'vendor',
+            '.git',
+            'storage/framework/cache',
+            'storage/framework/sessions',
+            'storage/framework/views',
+            'storage/logs',
+            'storage/app/errorvault-backup',
+            'bootstrap/cache',
+            '.env',
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Health Monitoring
     |--------------------------------------------------------------------------
     |
