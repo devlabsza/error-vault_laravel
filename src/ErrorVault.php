@@ -11,7 +11,24 @@ class ErrorVault
     /**
      * Package version
      */
-    public const VERSION = '1.3.3';
+    public const VERSION = '1.3.4';
+
+    /**
+     * Derive an endpoint sibling of `/errors` from the configured API endpoint.
+     *
+     * The configured value may or may not include the `/errors` suffix — we
+     * accept both forms and derive `/verify`, `/ping`, `/stats`, `/health/report`,
+     * etc. consistently. Fixes a class of silent 404s when users (or docs)
+     * configure the base URL without the suffix.
+     */
+    public static function endpointFor(?string $configured, string $suffix): string
+    {
+        $base = rtrim((string) $configured, '/');
+        if (preg_match('#/errors$#', $base)) {
+            $base = substr($base, 0, -strlen('/errors'));
+        }
+        return $base . '/' . ltrim($suffix, '/');
+    }
 
     /**
      * Configuration
@@ -513,7 +530,7 @@ class ErrorVault
                 'User-Agent' => 'ErrorVault-Laravel/' . self::VERSION,
             ])
             ->timeout(5)
-            ->post($this->config('api_endpoint'), $errorData);
+            ->post(self::endpointFor($this->config('api_endpoint'), 'errors'), $errorData);
 
             if ($response->successful()) {
                 $this->clearConnectionFailures();
@@ -539,7 +556,7 @@ class ErrorVault
         }
 
         try {
-            $endpoint = rtrim($this->config('api_endpoint'), '/') . '/batch';
+            $endpoint = self::endpointFor($this->config('api_endpoint'), 'errors/batch');
 
             Http::withHeaders([
                 'X-API-Token' => $this->config('api_token'),
@@ -655,7 +672,7 @@ class ErrorVault
     public function verify(): array
     {
         try {
-            $endpoint = str_replace('/errors', '/verify', rtrim($this->config('api_endpoint'), '/'));
+            $endpoint = self::endpointFor($this->config('api_endpoint'), 'verify');
 
             $response = Http::withHeaders([
                 'X-API-Token' => $this->config('api_token'),
@@ -691,7 +708,7 @@ class ErrorVault
     public function stats(): ?array
     {
         try {
-            $endpoint = str_replace('/errors', '/stats', rtrim($this->config('api_endpoint'), '/'));
+            $endpoint = self::endpointFor($this->config('api_endpoint'), 'stats');
 
             $response = Http::withHeaders([
                 'X-API-Token' => $this->config('api_token'),
@@ -722,7 +739,7 @@ class ErrorVault
         }
 
         try {
-            $endpoint = str_replace('/errors', '/ping', rtrim($this->config('api_endpoint'), '/'));
+            $endpoint = self::endpointFor($this->config('api_endpoint'), 'ping');
 
             $request = Http::withHeaders([
                 'X-API-Token' => $this->config('api_token'),

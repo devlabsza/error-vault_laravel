@@ -289,7 +289,7 @@ class HealthMonitor
     public function sendHealthAlert(array $alertData): bool
     {
         try {
-            $endpoint = str_replace('/errors', '/health/alert', rtrim($this->config['api_endpoint'], '/'));
+            $endpoint = ErrorVault::endpointFor($this->config['api_endpoint'] ?? null, 'health/alert');
 
             // Add common context
             $alertData['site_url'] = config('app.url');
@@ -338,7 +338,7 @@ class HealthMonitor
         }
 
         try {
-            $endpoint = str_replace('/errors', '/health/report', rtrim($this->config['api_endpoint'], '/'));
+            $endpoint = ErrorVault::endpointFor($this->config['api_endpoint'] ?? null, 'health/report');
             $healthData = $this->getCurrentHealthStatus();
 
             $healthData['site_url'] = config('app.url');
