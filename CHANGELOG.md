@@ -2,6 +2,11 @@
 
 All notable changes to the ErrorVault Laravel package will be documented in this file.
 
+## [1.3.3] - 2026-04-22
+
+### Changed
+- `errorvault:health-report` now prints the actual failure reason (HTTP status + response body preview, or the exception message) instead of the generic "Check your configuration and connection." `HealthMonitor::getLastError()` is public for programmatic access.
+
 ## [1.3.2] - 2026-04-22
 
 ### Fixed

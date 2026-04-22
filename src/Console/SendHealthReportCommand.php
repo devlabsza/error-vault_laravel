@@ -61,7 +61,8 @@ class SendHealthReportCommand extends Command
             return Command::SUCCESS;
         }
 
-        $this->error('Failed to send health report. Check your configuration and connection.');
+        $reason = $errorVault->getHealthMonitor()?->getLastError();
+        $this->error('Failed to send health report.' . ($reason ? ' Reason: ' . $reason : ' Check storage/logs/laravel.log for details.'));
         return Command::FAILURE;
     }
 

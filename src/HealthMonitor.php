@@ -314,11 +314,26 @@ class HealthMonitor
     }
 
     /**
+     * Last error surfaced by sendHealthReport(), so callers (e.g. the
+     * errorvault:health-report artisan command) can display a real reason
+     * instead of a generic "Failed to send".
+     */
+    protected ?string $lastError = null;
+
+    public function getLastError(): ?string
+    {
+        return $this->lastError;
+    }
+
+    /**
      * Send periodic health report
      */
     public function sendHealthReport(bool $blocking = false): bool
     {
+        $this->lastError = null;
+
         if (!$this->isEnabled()) {
+            $this->lastError = 'Health monitoring is not enabled.';
             return false;
         }
 
@@ -326,7 +341,6 @@ class HealthMonitor
             $endpoint = str_replace('/errors', '/health/report', rtrim($this->config['api_endpoint'], '/'));
             $healthData = $this->getCurrentHealthStatus();
 
-            // Add common context
             $healthData['site_url'] = config('app.url');
             $healthData['site_name'] = config('app.name');
             $healthData['plugin_version'] = ErrorVault::VERSION;
@@ -337,21 +351,24 @@ class HealthMonitor
             ])->timeout(10);
 
             if (!$blocking) {
-                // Non-blocking (fire and forget)
                 $request->async()->post($endpoint, $healthData);
                 return true;
             }
 
             $response = $request->post($endpoint, $healthData);
-            
+
             if ($response->successful()) {
                 return true;
             }
-            
-            Log::error('[ErrorVault] Health report failed: HTTP ' . $response->status());
+
+            $body = $response->body();
+            $preview = mb_strlen($body) > 300 ? mb_substr($body, 0, 300) . '…' : $body;
+            $this->lastError = sprintf('HTTP %d from %s — %s', $response->status(), $endpoint, $preview);
+            Log::error('[ErrorVault] Health report failed: ' . $this->lastError);
             return false;
         } catch (Throwable $e) {
-            Log::error('[ErrorVault] Failed to send health report: ' . $e->getMessage());
+            $this->lastError = $e->getMessage();
+            Log::error('[ErrorVault] Failed to send health report: ' . $this->lastError);
             return false;
         }
     }
