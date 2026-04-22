@@ -2,6 +2,11 @@
 
 All notable changes to the ErrorVault Laravel package will be documented in this file.
 
+## [1.3.2] - 2026-04-22
+
+### Fixed
+- **Scheduler crashed on every heartbeat tick.** `$schedule->call(Closure)` does not support `->runInBackground()` — Laravel throws "Scheduled closures can not be run in the background." The heartbeat was calling `runInBackground()` on a closure, crashing the scheduler for every site with ErrorVault enabled. The call to the portal is already non-blocking via Guzzle, so removing `runInBackground()` has no performance impact.
+
 ## [1.3.1] - 2026-04-17
 
 ### Changed

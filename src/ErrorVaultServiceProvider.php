@@ -92,16 +92,18 @@ class ErrorVaultServiceProvider extends ServiceProvider
     protected function registerHealthSchedule(): void
     {
         $this->callAfterResolving(Schedule::class, function (Schedule $schedule) {
-            // Heartbeat/ping every 5 minutes (always runs if ErrorVault is enabled)
+            // Heartbeat/ping every 5 minutes (always runs if ErrorVault is enabled).
+            // NOTE: $schedule->call() wraps a closure — Laravel does NOT allow
+            // closures to ->runInBackground(), that only works for command events.
+            // The ping itself is non-blocking via Guzzle so this completes fast.
             if (config('errorvault.enabled', false)) {
                 $schedule->call(function () {
                     $errorVault = app(ErrorVault::class);
-                    $errorVault->sendPing(false); // Non-blocking
+                    $errorVault->sendPing(false);
                 })
                     ->everyFiveMinutes()
                     ->name('errorvault-heartbeat')
-                    ->withoutOverlapping()
-                    ->runInBackground();
+                    ->withoutOverlapping();
             }
 
             // Health monitoring schedule (only if health monitoring is enabled)
