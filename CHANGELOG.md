@@ -2,6 +2,15 @@
 
 All notable changes to the ErrorVault Laravel package will be documented in this file.
 
+## [1.3.1] - 2026-04-17
+
+### Changed
+- **Default API endpoint is now hardcoded** to `https://error-vault.com/api/v1/errors`. Users only need to set `ERRORVAULT_API_TOKEN` — no more silent "empty endpoint means reporting disabled" trap. Override with `ERRORVAULT_API_ENDPOINT` when self-hosting.
+
+### Added
+- **Query-param and context scrubbing**: any key whose name matches `config('errorvault.scrub_keys')` is replaced with `[FILTERED]` before errors are sent. Catches common secrets (`token`, `api_key`, `authorization`, `password`, `cookie`, etc.) in the request URL and in error context arrays. Extend the list in your config.
+- **`errorvault:test-error` artisan command**: dispatches a sample error so you can verify the whole pipeline end-to-end, with `--severity` and `--message` options.
+
 ## [1.3.0] - 2026-01-30
 
 ### Added

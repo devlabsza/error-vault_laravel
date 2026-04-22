@@ -19,12 +19,13 @@ return [
     | API Endpoint
     |--------------------------------------------------------------------------
     |
-    | The URL of your ErrorVault API endpoint. This is typically:
-    | https://your-errorvault-portal.com/api/v1/errors
+    | The ErrorVault API endpoint. Defaults to the hosted service so most
+    | users only need to set ERRORVAULT_API_TOKEN. Override this if you
+    | run a self-hosted portal.
     |
     */
 
-    'api_endpoint' => env('ERRORVAULT_API_ENDPOINT', ''),
+    'api_endpoint' => env('ERRORVAULT_API_ENDPOINT', 'https://error-vault.com/api/v1/errors'),
 
     /*
     |--------------------------------------------------------------------------
@@ -119,6 +120,25 @@ return [
 
     'severity_map' => [
         // \App\Exceptions\CustomException::class => 'warning',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Scrub Query & Context Keys
+    |--------------------------------------------------------------------------
+    |
+    | Before an error is sent, these query-string parameter names and context
+    | array keys are replaced with "[FILTERED]". Add any names that might
+    | carry secrets in your app (for example signed URLs, auth tokens,
+    | or third-party callback credentials).
+    |
+    */
+
+    'scrub_keys' => [
+        'password', 'password_confirmation', 'token', 'api_token',
+        'api_key', 'apikey', 'secret', 'access_token', 'refresh_token',
+        'authorization', 'auth', 'signature', 'signed', 'key',
+        'x-api-token', 'x-api-key', 'cookie', 'session',
     ],
 
     /*

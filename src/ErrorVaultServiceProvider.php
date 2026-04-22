@@ -7,6 +7,7 @@ use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Console\Scheduling\Schedule;
 use ErrorVault\Laravel\Console\SendHealthReportCommand;
 use ErrorVault\Laravel\Console\TestConnectionCommand;
+use ErrorVault\Laravel\Console\TestErrorCommand;
 use ErrorVault\Laravel\Console\DiagnosticsCommand;
 use ErrorVault\Laravel\Http\Middleware\TrackHealthRequests;
 
@@ -63,6 +64,7 @@ class ErrorVaultServiceProvider extends ServiceProvider
             $this->commands([
                 SendHealthReportCommand::class,
                 TestConnectionCommand::class,
+                TestErrorCommand::class,
                 DiagnosticsCommand::class,
             ]);
         }

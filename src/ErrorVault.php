@@ -11,7 +11,7 @@ class ErrorVault
     /**
      * Package version
      */
-    public const VERSION = '1.3.0';
+    public const VERSION = '1.3.1';
 
     /**
      * Configuration
@@ -237,8 +237,8 @@ class ErrorVault
         // Add server info
         $context['server_info'] = $this->getServerInfo();
 
-        // Merge additional context
-        return array_merge($context, $additionalContext);
+        // Merge additional context, then scrub anything that looks like a secret.
+        return $this->scrubArray(array_merge($context, $additionalContext));
     }
 
     /**
@@ -555,15 +555,77 @@ class ErrorVault
     }
 
     /**
-     * Get current URL
+     * Get current URL with sensitive query params scrubbed.
      */
     protected function getCurrentUrl(): string
     {
         try {
-            return request()->fullUrl();
+            return $this->scrubUrl(request()->fullUrl());
         } catch (Throwable $e) {
             return '';
         }
+    }
+
+    /**
+     * Replace any query param whose name appears in the scrub list with [FILTERED].
+     */
+    protected function scrubUrl(string $url): string
+    {
+        $qPos = strpos($url, '?');
+        if ($qPos === false) {
+            return $url;
+        }
+
+        $base = substr($url, 0, $qPos);
+        $fragment = '';
+        $queryPart = substr($url, $qPos + 1);
+
+        if (($hashPos = strpos($queryPart, '#')) !== false) {
+            $fragment = substr($queryPart, $hashPos);
+            $queryPart = substr($queryPart, 0, $hashPos);
+        }
+
+        $scrubKeys = array_map('strtolower', $this->scrubKeys());
+        $pairs = explode('&', $queryPart);
+
+        foreach ($pairs as $i => $pair) {
+            if ($pair === '') {
+                continue;
+            }
+            [$rawKey, $rawValue] = array_pad(explode('=', $pair, 2), 2, '');
+            $decodedKey = strtolower(urldecode($rawKey));
+            if (in_array($decodedKey, $scrubKeys, true)) {
+                $pairs[$i] = $rawKey . '=' . urlencode('[FILTERED]');
+            }
+        }
+
+        $newQuery = implode('&', array_filter($pairs, fn ($p) => $p !== ''));
+        return $base . ($newQuery === '' ? '' : '?' . $newQuery) . $fragment;
+    }
+
+    /**
+     * Recursively scrub keys in an array that look like secrets.
+     */
+    protected function scrubArray(array $data): array
+    {
+        $scrubKeys = array_map('strtolower', $this->scrubKeys());
+
+        foreach ($data as $key => $value) {
+            if (is_string($key) && in_array(strtolower($key), $scrubKeys, true)) {
+                $data[$key] = '[FILTERED]';
+                continue;
+            }
+            if (is_array($value)) {
+                $data[$key] = $this->scrubArray($value);
+            }
+        }
+
+        return $data;
+    }
+
+    protected function scrubKeys(): array
+    {
+        return (array) $this->config('scrub_keys', []);
     }
 
     /**
