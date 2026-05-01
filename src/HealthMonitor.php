@@ -152,11 +152,14 @@ class HealthMonitor
      */
     protected function checkMemoryUsage(): ?array
     {
-        $memoryUsage = memory_get_usage(true);
-        $memoryLimit = $this->getMemoryLimitBytes();
+        // Use system RAM rather than PHP process memory — the latter is
+        // ~constant for an artisan command and never trips alerts.
+        $sys = $this->getSystemMemory();
+        $memoryUsage = $sys['used'];
+        $memoryLimit = $sys['total'];
 
         if ($memoryLimit <= 0) {
-            return null; // Unlimited memory
+            return null;
         }
 
         $threshold = $this->config['health_monitoring']['memory_threshold'] ?? 80;
@@ -167,7 +170,7 @@ class HealthMonitor
                 'type' => 'memory_pressure',
                 'severity' => $usagePercent >= 95 ? 'critical' : 'warning',
                 'message' => sprintf(
-                    'High memory usage: %s of %s (%.1f%%)',
+                    'High system memory usage: %s of %s (%.1f%%)',
                     $this->formatBytes($memoryUsage),
                     $this->formatBytes($memoryLimit),
                     $usagePercent
@@ -179,6 +182,7 @@ class HealthMonitor
                     'limit_formatted' => $this->formatBytes($memoryLimit),
                     'usage_percent' => round($usagePercent, 1),
                     'threshold' => $threshold,
+                    'source' => $sys['source'],
                 ],
             ];
         }
@@ -385,10 +389,18 @@ class HealthMonitor
         $load = function_exists('sys_getloadavg') ? sys_getloadavg() : [0, 0, 0];
         $cpuCores = $this->getCpuCores();
 
-        // Memory info
-        $memoryUsage = memory_get_usage(true);
-        $memoryPeak = memory_get_peak_usage(true);
-        $memoryLimit = $this->getMemoryLimitBytes();
+        // System RAM (Linux /proc/meminfo or macOS vm_stat). Falls back to
+        // PHP process memory only if neither is available — see getSystemMemory().
+        $sysMemory = $this->getSystemMemory();
+        $memoryUsage = $sysMemory['used'];
+        $memoryLimit = $sysMemory['total'];
+        $memorySource = $sysMemory['source'];
+
+        // PHP process memory kept around for context — useful for spotting
+        // a runaway worker even when the host has plenty of RAM.
+        $phpMemoryUsage = memory_get_usage(true);
+        $phpMemoryPeak = memory_get_peak_usage(true);
+        $phpMemoryLimit = $this->getMemoryLimitBytes();
 
         // Request info - check both current and previous window to avoid missing data at minute boundaries
         $currentCount = (int) Cache::get(self::REQUEST_COUNT_KEY . '_' . $window, 0);
@@ -415,13 +427,28 @@ class HealthMonitor
                 'load_percent' => $cpuCores > 0 ? round(($load[0] / $cpuCores) * 100, 1) : 0,
             ],
             'memory' => [
+                // System RAM (the meaningful number for "Server Health").
                 'usage' => $memoryUsage,
                 'usage_formatted' => $this->formatBytes($memoryUsage),
-                'peak' => $memoryPeak,
-                'peak_formatted' => $this->formatBytes($memoryPeak),
                 'limit' => $memoryLimit,
                 'limit_formatted' => $this->formatBytes($memoryLimit),
                 'usage_percent' => $memoryLimit > 0 ? round(($memoryUsage / $memoryLimit) * 100, 1) : 0,
+                'source' => $memorySource,
+
+                // PHP process memory (the worker / artisan command itself).
+                // Kept so a runaway script still shows up even when the box
+                // has plenty of RAM available.
+                'php_usage' => $phpMemoryUsage,
+                'php_usage_formatted' => $this->formatBytes($phpMemoryUsage),
+                'php_peak' => $phpMemoryPeak,
+                'php_peak_formatted' => $this->formatBytes($phpMemoryPeak),
+                'php_limit' => $phpMemoryLimit,
+                'php_limit_formatted' => $this->formatBytes($phpMemoryLimit),
+
+                // Backwards compatibility: clients that read .peak / .peak_formatted
+                // from earlier versions still get a meaningful value.
+                'peak' => $phpMemoryPeak,
+                'peak_formatted' => $this->formatBytes($phpMemoryPeak),
             ],
             'disk' => [
                 'free' => $diskFree,
@@ -555,6 +582,131 @@ class HealthMonitor
 
         $cores = 1;
         return $cores;
+    }
+
+    /**
+     * Read system-level RAM usage. Returns ['total','available','used',
+     * 'used_percent','source'] in bytes (except used_percent).
+     *
+     * Source priority:
+     *   - "proc_meminfo"  — Linux: parses /proc/meminfo (most servers)
+     *   - "vm_stat"       — macOS: vm_stat + sysctl hw.memsize (dev boxes)
+     *   - "php_fallback"  — last resort: PHP process memory vs memory_limit
+     *                        (poor proxy but better than zero)
+     */
+    protected function getSystemMemory(): array
+    {
+        $linux = $this->readProcMeminfo();
+        if ($linux !== null) {
+            return $linux + ['source' => 'proc_meminfo'];
+        }
+
+        $mac = $this->readMacMemory();
+        if ($mac !== null) {
+            return $mac + ['source' => 'vm_stat'];
+        }
+
+        // Last-resort fallback so the rest of the report doesn't break.
+        $usage = memory_get_usage(true);
+        $limit = $this->getMemoryLimitBytes();
+        $total = $limit > 0 ? $limit : ($usage * 4); // best-effort denominator
+        $usedPercent = $total > 0 ? round(($usage / $total) * 100, 1) : 0;
+        return [
+            'total' => $total,
+            'available' => max(0, $total - $usage),
+            'used' => $usage,
+            'used_percent' => $usedPercent,
+            'source' => 'php_fallback',
+        ];
+    }
+
+    protected function readProcMeminfo(): ?array
+    {
+        $path = '/proc/meminfo';
+        if (!is_readable($path)) {
+            return null;
+        }
+
+        $contents = @file_get_contents($path);
+        if ($contents === false) {
+            return null;
+        }
+
+        $values = [];
+        foreach (preg_split('/\r?\n/', $contents) as $line) {
+            if (preg_match('/^([A-Za-z()_]+):\s+([0-9]+)\s+kB/', $line, $m)) {
+                $values[$m[1]] = (int) $m[2] * 1024;
+            }
+        }
+
+        if (empty($values['MemTotal'])) {
+            return null;
+        }
+
+        // MemAvailable was added in Linux 3.14 — prefer it; otherwise estimate.
+        if (isset($values['MemAvailable'])) {
+            $available = $values['MemAvailable'];
+        } else {
+            $available = ($values['MemFree'] ?? 0)
+                + ($values['Buffers'] ?? 0)
+                + ($values['Cached'] ?? 0);
+        }
+
+        $total = $values['MemTotal'];
+        $used = max(0, $total - $available);
+        return [
+            'total' => $total,
+            'available' => $available,
+            'used' => $used,
+            'used_percent' => $total > 0 ? round(($used / $total) * 100, 1) : 0,
+        ];
+    }
+
+    protected function readMacMemory(): ?array
+    {
+        if (!function_exists('shell_exec')) {
+            return null;
+        }
+
+        $sysctl = @shell_exec('sysctl -n hw.memsize 2>/dev/null');
+        if (!$sysctl || !is_numeric(trim($sysctl))) {
+            return null;
+        }
+        $total = (int) trim($sysctl);
+
+        $vmStat = @shell_exec('vm_stat 2>/dev/null');
+        if (!$vmStat) {
+            return null;
+        }
+
+        // Page size is in the first line, e.g. "Mach Virtual Memory Statistics:
+        // (page size of 16384 bytes)"
+        $pageSize = 4096;
+        if (preg_match('/page size of (\d+) bytes/', $vmStat, $m)) {
+            $pageSize = (int) $m[1];
+        }
+
+        $pages = [];
+        foreach (preg_split('/\r?\n/', $vmStat) as $line) {
+            if (preg_match('/^"?([\w\s]+?)"?:\s+([0-9]+)\.?$/', $line, $m)) {
+                $pages[strtolower(trim($m[1]))] = (int) $m[2];
+            }
+        }
+
+        // Used ≈ active + wired + compressed. Inactive + speculative are
+        // reclaimable, so they shouldn't count as "used" for our purposes.
+        $active = ($pages['pages active'] ?? 0) * $pageSize;
+        $wired = ($pages['pages wired down'] ?? 0) * $pageSize;
+        $compressed = ($pages['pages occupied by compressor'] ?? 0) * $pageSize;
+        $used = $active + $wired + $compressed;
+        $available = max(0, $total - $used);
+
+        return [
+            'total' => $total,
+            'available' => $available,
+            'used' => $used,
+            'used_percent' => $total > 0 ? round(($used / $total) * 100, 1) : 0,
+        ];
     }
 
     /**

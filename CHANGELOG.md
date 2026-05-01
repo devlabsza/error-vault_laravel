@@ -2,6 +2,18 @@
 
 All notable changes to the ErrorVault Laravel package will be documented in this file.
 
+## [1.4.1] - 2026-05-02
+
+### Fixed
+- **Memory reporting was meaningless.** Health reports were reading `memory_get_usage(true)` against `ini_get('memory_limit')`, which on a freshly-booted artisan command (the scheduler tick) is always ~3-5%. The dashboard's "Memory" tile never moved off green, so warning / critical thresholds were effectively dead.
+
+  v1.4.1 reads system RAM directly:
+  - Linux: parses `/proc/meminfo` (prefers `MemAvailable`, falls back to `MemFree + Buffers + Cached`).
+  - macOS: parses `vm_stat` + `sysctl hw.memsize` (Active + Wired + Compressed = used).
+  - Last-resort fallback: PHP process memory (only when both above are unavailable, e.g. exotic hosts with `shell_exec` disabled and no `/proc/meminfo`).
+
+  PHP process memory is still in the payload as `memory.php_usage` / `memory.php_peak` / `memory.php_limit` so a runaway worker still surfaces. `memory.peak` / `memory.peak_formatted` retained as aliases so dashboards built against earlier versions don't break. New `memory.source` field reports which method was used (`proc_meminfo` / `vm_stat` / `php_fallback`).
+
 ## [1.4.0] - 2026-04-22
 
 ### Added
