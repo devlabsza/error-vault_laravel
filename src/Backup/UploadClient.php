@@ -120,7 +120,7 @@ class UploadClient
         try {
             $this->http()->post(
                 ErrorVault::endpointFor($this->apiEndpoint, "backups/{$backupId}/fail"),
-                ['reason' => mb_substr($reason, 0, 500)]
+                ['error' => mb_substr($reason, 0, 500)]
             );
         } catch (\Throwable $e) {
             // Nothing useful we can do if telling the portal also fails.

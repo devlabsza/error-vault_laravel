@@ -2,6 +2,20 @@
 
 All notable changes to the ErrorVault Laravel package will be documented in this file.
 
+## [1.4.2] - 2026-09-17
+
+### Security
+- Backup exclusions now prune directory trees rather than merely skipping each directory entry, so `vendor`, `node_modules`, `.git`, `storage/app`, caches, logs and custom excluded folders cannot have their children added to an archive.
+- Backup creation skips symlinks and its own SQL/ZIP working files, uses random private filenames and restrictive permissions, removes stale work files, and refuses a temporary path under `public` or `storage/app/public`.
+- Exception traces are formatted without call arguments so secrets cannot leak when `zend.exception_ignore_args` is disabled.
+
+### Fixed
+- Backup failures send the portal's `error` field and abort an initiated multipart upload.
+- The PHP database-export fallback now reads Laravel's object rows correctly, safely quotes identifiers, exports views without trying to insert into them, and is used when `exec` is disabled. Mysqldump option files are always removed and their values cannot inject extra options.
+- Database-only backup requests now contain only `database.sql`; full requests contain the project and database.
+- Automatic reporting respects Laravel's `shouldReport()` filters.
+- CPU alert thresholds use percentages, traffic spikes use the documented config key, alert cooldowns use minutes, and overall report status uses the same configured thresholds as alerts.
+
 ## [1.4.1] - 2026-05-02
 
 ### Fixed

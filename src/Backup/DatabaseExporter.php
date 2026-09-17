@@ -34,7 +34,7 @@ class DatabaseExporter
             throw new RuntimeException("Cannot create directory: {$dir}");
         }
 
-        if ($this->tryMysqldump($config, $targetPath)) {
+        if (function_exists('exec') && $this->tryMysqldump($config, $targetPath)) {
             return $targetPath;
         }
 
@@ -73,9 +73,29 @@ class DatabaseExporter
         }
 
         // Use --defaults-extra-file for credentials instead of command-line
-        // to avoid leaking the password to `ps`.
+        // to avoid leaking the password to `ps`. Escape option-file control
+        // characters so a newline in configuration cannot add an option.
+        $option = fn ($value) => str_replace(
+            ["\\", "\r", "\n", '"'],
+            ["\\\\", '', '\\n', '\\"'],
+            (string) $value
+        );
         $credsFile = $targetPath . '.mycnf';
-        file_put_contents($credsFile, "[client]\nuser={$user}\npassword=\"{$pass}\"\nhost={$host}\nport={$port}\n");
+        $contents = "[client]\n"
+            . 'user="' . $option($user) . "\"\n"
+            . 'password="' . $option($pass) . "\"\n"
+            . 'host="' . $option($host) . "\"\n"
+            . 'port="' . $option($port) . "\"\n";
+        $oldUmask = umask(0077);
+        try {
+            $written = file_put_contents($credsFile, $contents, LOCK_EX);
+        } finally {
+            umask($oldUmask);
+        }
+        if ($written === false) {
+            $this->log('Could not create the private mysqldump option file');
+            return false;
+        }
         @chmod($credsFile, 0600);
 
         $cmd = sprintf(
@@ -87,9 +107,15 @@ class DatabaseExporter
         );
 
         $output = [];
-        $rc = 0;
-        exec($cmd, $output, $rc);
-        @unlink($credsFile);
+        $rc = 1;
+        try {
+            exec($cmd, $output, $rc);
+        } catch (\Throwable $e) {
+            $this->log('mysqldump could not run: ' . $e->getMessage());
+            return false;
+        } finally {
+            @unlink($credsFile);
+        }
 
         if ($rc === 0 && file_exists($targetPath) && filesize($targetPath) > 0) {
             $this->log('mysqldump succeeded: ' . $this->formatBytes(filesize($targetPath)));
@@ -118,11 +144,13 @@ class DatabaseExporter
             }
         }
 
-        $which = @shell_exec('command -v mysqldump 2>/dev/null');
-        if (is_string($which) && trim($which) !== '') {
-            $path = trim($which);
-            if (is_executable($path)) {
-                return $path;
+        if (function_exists('shell_exec')) {
+            $which = @shell_exec('command -v mysqldump 2>/dev/null');
+            if (is_string($which) && trim($which) !== '') {
+                $path = trim($which);
+                if (is_executable($path)) {
+                    return $path;
+                }
             }
         }
 
@@ -147,7 +175,12 @@ class DatabaseExporter
             fwrite($fp, "SET FOREIGN_KEY_CHECKS=0;\n\n");
 
             $tables = collect(DB::connection($this->connection)->select('SHOW TABLES'))
-                ->map(fn ($row) => reset($row))
+                ->map(function ($row) {
+                    $values = array_values((array) $row);
+                    return isset($values[0]) ? (string) $values[0] : null;
+                })
+                ->filter()
+                ->values()
                 ->all();
 
             foreach ($tables as $table) {
@@ -165,32 +198,44 @@ class DatabaseExporter
     protected function dumpTable($fp, string $table): void
     {
         $conn = DB::connection($this->connection);
+        $quotedTable = $this->quoteIdentifier($table);
 
-        $create = $conn->selectOne("SHOW CREATE TABLE `{$table}`");
-        $createSql = $create->{'Create Table'} ?? $create->{'Create View'} ?? null;
-        if (!$createSql) {
+        $create = $conn->selectOne("SHOW CREATE TABLE {$quotedTable}");
+        $createTable = $create->{'Create Table'} ?? null;
+        $createView = $create->{'Create View'} ?? null;
+        if (!$createTable && !$createView) {
             return;
         }
 
-        fwrite($fp, "DROP TABLE IF EXISTS `{$table}`;\n");
-        fwrite($fp, $createSql . ";\n\n");
+        if ($createView) {
+            fwrite($fp, "DROP VIEW IF EXISTS {$quotedTable};\n");
+            fwrite($fp, $createView . ";\n\n");
+            return; // Views expose table rows; they do not receive INSERT statements.
+        }
+
+        fwrite($fp, "DROP TABLE IF EXISTS {$quotedTable};\n");
+        fwrite($fp, $createTable . ";\n\n");
 
         // Stream rows in chunks of 500 to avoid holding a whole table in memory.
         $offset = 0;
         $chunk = 500;
         while (true) {
-            $rows = $conn->select("SELECT * FROM `{$table}` LIMIT {$chunk} OFFSET {$offset}");
+            $rows = $conn->select("SELECT * FROM {$quotedTable} LIMIT {$chunk} OFFSET {$offset}");
             if (empty($rows)) {
                 break;
             }
 
             foreach ($rows as $row) {
                 $values = array_map(
-                    fn ($v) => $v === null ? 'NULL' : ("'" . str_replace(["\\", "'", "\n", "\r"], ["\\\\", "\\'", "\\n", "\\r"], (string) $v) . "'"),
+                    fn ($v) => $v === null ? 'NULL' : ("'" . str_replace(
+                        ["\\", "\0", "\n", "\r", "\x1a", "'"],
+                        ["\\\\", "\\0", "\\n", "\\r", "\\Z", "\\'"],
+                        (string) $v
+                    ) . "'"),
                     (array) $row
                 );
-                $cols = '`' . implode('`,`', array_keys((array) $row)) . '`';
-                fwrite($fp, "INSERT INTO `{$table}` ({$cols}) VALUES (" . implode(',', $values) . ");\n");
+                $cols = implode(',', array_map(fn ($column) => $this->quoteIdentifier((string) $column), array_keys((array) $row)));
+                fwrite($fp, "INSERT INTO {$quotedTable} ({$cols}) VALUES (" . implode(',', $values) . ");\n");
             }
 
             $offset += $chunk;
@@ -200,6 +245,11 @@ class DatabaseExporter
         }
 
         fwrite($fp, "\n");
+    }
+
+    protected function quoteIdentifier(string $identifier): string
+    {
+        return '`' . str_replace('`', '``', $identifier) . '`';
     }
 
     protected function formatBytes(int $bytes): string

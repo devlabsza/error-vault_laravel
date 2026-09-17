@@ -32,8 +32,10 @@ class ErrorVaultExceptionHandler implements ExceptionHandler
      */
     public function report(Throwable $e): void
     {
-        // Send to ErrorVault
-        $this->errorVault->report($e);
+        // Respect Laravel's own reporting filters (dontReport, shouldReport, etc.).
+        if ($this->handler->shouldReport($e)) {
+            $this->errorVault->report($e);
+        }
 
         // Call original handler
         $this->handler->report($e);

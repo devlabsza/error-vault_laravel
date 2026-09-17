@@ -120,18 +120,19 @@ class HealthMonitor
         }
 
         $cpuCores = $this->getCpuCores();
-        $threshold = $this->config['health_monitoring']['cpu_load_threshold'] ?? 2.0;
+        $threshold = (float) ($this->config['health_monitoring']['cpu_load_threshold'] ?? 80);
 
         $loadRatio = $cpuCores > 0 ? $load[0] / $cpuCores : $load[0];
+        $loadPercent = $loadRatio * 100;
 
-        if ($loadRatio >= $threshold) {
+        if ($loadPercent >= $threshold) {
             return [
                 'type' => 'cpu_overload',
-                'severity' => $loadRatio >= ($threshold * 1.5) ? 'critical' : 'warning',
+                'severity' => $loadPercent >= ($threshold * 1.5) ? 'critical' : 'warning',
                 'message' => sprintf(
                     'High CPU load detected: %.2f (%.1f%% of capacity)',
                     $load[0],
-                    $loadRatio * 100
+                    $loadPercent
                 ),
                 'data' => [
                     'load_1min' => $load[0],
@@ -139,6 +140,7 @@ class HealthMonitor
                     'load_15min' => $load[2],
                     'cpu_cores' => $cpuCores,
                     'load_ratio' => round($loadRatio, 2),
+                    'load_percent' => round($loadPercent, 1),
                     'threshold' => $threshold,
                 ],
             ];
@@ -203,8 +205,8 @@ class HealthMonitor
         $prevCount = (int) Cache::get(self::REQUEST_COUNT_KEY . '_' . $prevWindow, 0);
 
         // Get thresholds from config
-        $rateThreshold = $this->config['health_monitoring']['request_rate_threshold'] ?? 100;
-        $spikeThreshold = $this->config['health_monitoring']['request_spike_threshold'] ?? 3.0;
+        $rateThreshold = $this->config['health_monitoring']['request_rate_threshold'] ?? 1000;
+        $spikeThreshold = $this->config['health_monitoring']['request_spike_multiplier'] ?? 5.0;
 
         // Check absolute threshold
         if ($currentCount >= $rateThreshold) {
@@ -264,7 +266,7 @@ class HealthMonitor
         $lastAlerts = Cache::get(self::LAST_ALERT_KEY, []);
         $alertsToSend = [];
         $now = time();
-        $cooldown = $this->config['health_monitoring']['alert_cooldown'] ?? 300;
+        $cooldown = ((int) ($this->config['health_monitoring']['alert_cooldown'] ?? 15)) * 60;
 
         foreach ($alerts as $alert) {
             $type = $alert['type'];
@@ -477,17 +479,19 @@ class HealthMonitor
     {
         $cpuCores = $this->getCpuCores();
         $loadRatio = $cpuCores > 0 ? $load[0] / $cpuCores : $load[0];
+        $loadPercent = $loadRatio * 100;
         $memoryPercent = $memoryLimit > 0 ? ($memoryUsage / $memoryLimit) * 100 : 0;
 
-        $rateThreshold = $this->config['health_monitoring']['request_rate_threshold'] ?? 100;
+        $cpuThreshold = (float) ($this->config['health_monitoring']['cpu_load_threshold'] ?? 80);
+        $memoryThreshold = (float) ($this->config['health_monitoring']['memory_threshold'] ?? 80);
+        $rateThreshold = (int) ($this->config['health_monitoring']['request_rate_threshold'] ?? 1000);
 
-        // Critical conditions
-        if ($loadRatio >= 3 || $memoryPercent >= 95 || $requestCount >= ($rateThreshold * 3)) {
+        // Keep report status consistent with the alert thresholds above.
+        if ($loadPercent >= ($cpuThreshold * 1.5) || $memoryPercent >= 95 || $requestCount >= ($rateThreshold * 2)) {
             return 'critical';
         }
 
-        // Warning conditions
-        if ($loadRatio >= 2 || $memoryPercent >= 80 || $requestCount >= $rateThreshold) {
+        if ($loadPercent >= $cpuThreshold || $memoryPercent >= $memoryThreshold || $requestCount >= $rateThreshold) {
             return 'warning';
         }
 

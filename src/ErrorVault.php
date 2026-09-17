@@ -11,7 +11,7 @@ class ErrorVault
     /**
      * Package version
      */
-    public const VERSION = '1.4.1';
+    public const VERSION = '1.4.2';
 
     /**
      * Derive an endpoint sibling of `/errors` from the configured API endpoint.
@@ -211,7 +211,10 @@ class ErrorVault
             'severity' => $this->getSeverity($exception),
             'file' => $exception->getFile(),
             'line' => $exception->getLine(),
-            'stack_trace' => $exception->getTraceAsString(),
+            // Format frames ourselves so call arguments (passwords, tokens,
+            // request objects, etc.) are never sent when PHP is configured
+            // with zend.exception_ignore_args=0.
+            'stack_trace' => $this->formatExceptionTrace($exception),
             'context' => $this->buildContext($context),
             'php_version' => PHP_VERSION,
             'laravel_version' => app()->version(),
@@ -220,6 +223,22 @@ class ErrorVault
             'ip_address' => request()->ip(),
             'user_agent' => request()->userAgent(),
         ];
+    }
+
+    /** Format an exception trace without call arguments. */
+    protected function formatExceptionTrace(Throwable $exception): string
+    {
+        $output = [];
+        foreach (array_values($exception->getTrace()) as $i => $frame) {
+            $file = $frame['file'] ?? '[internal]';
+            $line = $frame['line'] ?? 0;
+            $class = isset($frame['class']) ? $frame['class'] . ($frame['type'] ?? '::') : '';
+            $function = $frame['function'] ?? '';
+            $output[] = "#{$i} {$file}({$line}): {$class}{$function}()";
+        }
+        $output[] = '#' . count($output) . ' {main}';
+
+        return implode("\n", $output);
     }
 
     /**

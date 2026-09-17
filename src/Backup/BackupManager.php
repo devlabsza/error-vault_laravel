@@ -77,20 +77,38 @@ class BackupManager
      */
     public function run(int $backupId, array $backup, UploadClient $client): array
     {
-        $tmp = rtrim((string) ($this->config['backup']['tmp_path'] ?? sys_get_temp_dir()), '/\\');
-        if (!is_dir($tmp) && !mkdir($tmp, 0755, true) && !is_dir($tmp)) {
-            throw new RuntimeException("Cannot create tmp path: {$tmp}");
-        }
-
-        $stem = $tmp . '/ev-backup-' . $backupId . '-' . date('Ymd_His');
-        $sqlPath = $stem . '.sql';
-        $zipPath = $stem . '.zip';
+        $sqlPath = null;
+        $zipPath = null;
+        $uploadId = null;
+        $scope = ($backup['scope'] ?? 'full') === 'database' ? 'database' : 'full';
 
         try {
+            $tmp = $this->privateTempPath((string) ($this->config['backup']['tmp_path'] ?? sys_get_temp_dir()));
+            if (!is_dir($tmp)) {
+                if (!mkdir($tmp, 0700, true) && !is_dir($tmp)) {
+                    throw new RuntimeException("Cannot create tmp path: {$tmp}");
+                }
+                @chmod($tmp, 0700);
+            }
+            if (!is_writable($tmp)) {
+                throw new RuntimeException("Backup tmp path is not writable: {$tmp}");
+            }
+            $this->cleanupStaleFiles($tmp);
+
+            $stem = $tmp . '/ev-backup-' . $backupId . '-' . bin2hex(random_bytes(10));
+            $sqlPath = $stem . '.sql';
+            $zipPath = $stem . '.zip';
+
             // 1. Database dump.
             $this->log('Exporting database');
             $exporter = new DatabaseExporter();
-            $exporter->export($sqlPath);
+            $oldUmask = umask(0077);
+            try {
+                $exporter->export($sqlPath);
+            } finally {
+                umask($oldUmask);
+            }
+            @chmod($sqlPath, 0600);
             foreach ($exporter->getLog() as $line) {
                 $this->log('  ' . $line);
             }
@@ -99,10 +117,10 @@ class BackupManager
             $this->log('Building archive');
             $builder = new ArchiveBuilder(
                 base_path(),
-                (array) ($this->config['backup']['exclude_paths'] ?? []),
+                array_merge((array) ($this->config['backup']['exclude_paths'] ?? []), [$tmp]),
                 (bool) ($this->config['backup']['include_storage'] ?? false),
             );
-            $builder->build($zipPath, [$sqlPath => 'database.sql']);
+            $builder->build($zipPath, [$sqlPath => 'database.sql'], $scope === 'full');
             foreach ($builder->getLog() as $line) {
                 $this->log('  ' . $line);
             }
@@ -116,12 +134,13 @@ class BackupManager
                 'php_version' => PHP_VERSION,
                 'laravel_version' => app()->version(),
                 'plugin_version' => ErrorVault::VERSION,
-                'include_storage' => (bool) ($this->config['backup']['include_storage'] ?? false),
+                'include_storage' => $scope === 'full' && (bool) ($this->config['backup']['include_storage'] ?? false),
+                'scope' => $scope,
             ];
 
             // 3. Initiate.
             $initiated = $client->initiate($backupId, $checksum, $metadata);
-            $uploadId = $initiated['upload_id'];
+            $uploadId = (string) $initiated['upload_id'];
             $this->log("Initiated upload: {$uploadId}");
 
             // 4. Upload parts.
@@ -140,11 +159,18 @@ class BackupManager
             ];
         } catch (Throwable $e) {
             $this->log('Backup failed: ' . $e->getMessage());
+            if ($uploadId !== null) {
+                $client->abort($backupId, $uploadId);
+            }
             $client->fail($backupId, $e->getMessage());
             return ['status' => 'failed', 'message' => $e->getMessage()];
         } finally {
-            @unlink($sqlPath);
-            @unlink($zipPath);
+            if ($sqlPath !== null) {
+                @unlink($sqlPath);
+            }
+            if ($zipPath !== null) {
+                @unlink($zipPath);
+            }
         }
     }
 
@@ -183,6 +209,78 @@ class BackupManager
         }
 
         return $parts;
+    }
+
+    /**
+     * Resolve the configured working folder and refuse locations commonly
+     * reachable from the web. Database dumps must never be written under public/.
+     */
+    protected function privateTempPath(string $path): string
+    {
+        $path = $this->normalisePath($path);
+        if ($path === '/' || preg_match('#^[A-Za-z]:/?$#', $path)) {
+            throw new RuntimeException('ERRORVAULT_BACKUP_TMP_PATH must be a dedicated private directory, not a filesystem root.');
+        }
+        $publicPaths = [
+            function_exists('public_path') ? public_path() : base_path('public'),
+            function_exists('storage_path') ? storage_path('app/public') : base_path('storage/app/public'),
+        ];
+
+        foreach ($publicPaths as $public) {
+            $public = $this->normalisePath((string) $public);
+            if ($path === $public || str_starts_with($path, $public . '/')) {
+                throw new RuntimeException('ERRORVAULT_BACKUP_TMP_PATH must not be inside a public web directory.');
+            }
+        }
+
+        return $path;
+    }
+
+    protected function normalisePath(string $path): string
+    {
+        $path = str_replace('\\', '/', trim($path));
+        if ($path === '') {
+            throw new RuntimeException('Backup tmp path is empty.');
+        }
+        if (!str_starts_with($path, '/') && !preg_match('#^[A-Za-z]:/#', $path)) {
+            $path = base_path($path);
+        }
+
+        $prefix = str_starts_with($path, '/') ? '/' : '';
+        $parts = [];
+        foreach (explode('/', $path) as $part) {
+            if ($part === '' || $part === '.') {
+                continue;
+            }
+            if ($part === '..') {
+                array_pop($parts);
+            } else {
+                $parts[] = $part;
+            }
+        }
+        $path = $prefix . implode('/', $parts);
+        if ($path !== '/') {
+            $path = rtrim($path, '/');
+        }
+        $resolved = realpath($path);
+        if ($resolved !== false) {
+            return rtrim(str_replace('\\', '/', $resolved), '/');
+        }
+        $parent = realpath(dirname($path));
+        if ($parent !== false) {
+            return rtrim(str_replace('\\', '/', $parent), '/') . '/' . basename($path);
+        }
+        return $path;
+    }
+
+    /** Remove only old files created by this package after an interrupted run. */
+    protected function cleanupStaleFiles(string $tmp): void
+    {
+        foreach ((array) glob($tmp . '/ev-backup-*') as $file) {
+            if ((is_file($file) || is_link($file)) && time() - (int) @filemtime($file) >= 6 * 3600) {
+                @unlink($file);
+            }
+        }
     }
 
     public function getLog(): array

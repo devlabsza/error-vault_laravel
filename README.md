@@ -148,6 +148,26 @@ ErrorVault::sendPing(); // Non-blocking
 ErrorVault::sendPing(true); // Blocking
 ```
 
+## Backups
+
+Enable portal-requested backups and make sure Laravel's scheduler is running:
+
+```env
+ERRORVAULT_BACKUP_ENABLED=true
+ERRORVAULT_BACKUP_POLL_INTERVAL=5
+ERRORVAULT_BACKUP_INCLUDE_STORAGE=false
+```
+
+The package polls the portal, exports MySQL, builds either a database-only or full-project ZIP, and uploads it in chunks. Full backups exclude `vendor`, `node_modules`, `.git`, caches, logs, `.env`, and `storage/app` by default. Set `ERRORVAULT_BACKUP_INCLUDE_STORAGE=true` only when files in `storage/app` must be included.
+
+The working directory defaults to `storage/app/errorvault-backup`. A custom `ERRORVAULT_BACKUP_TMP_PATH` must be private and writable; paths under `public` or `storage/app/public` are refused.
+
+Run a poll manually with:
+
+```bash
+php artisan errorvault:run-backup
+```
+
 ## Health Monitoring
 
 Enable comprehensive server health monitoring:
@@ -221,6 +241,7 @@ The package automatically registers the following scheduled tasks:
 
 1. **Heartbeat** (every 5 minutes) - Keeps site active in portal
 2. **Health Report** (configurable, default 5 minutes) - Sends health metrics
+3. **Backup poll** (configurable, default 5 minutes) - Runs when backups are enabled
 
 Ensure your Laravel scheduler is running:
 
@@ -232,6 +253,9 @@ Or use Laravel's queue worker in production.
 
 ## Version History
 
+- **1.4.2** - Hardened backups and exception traces; fixed backup scopes, failure reporting, exporter fallback, Laravel reporting filters, and health thresholds
+- **1.4.1** - Reported system RAM rather than only PHP process memory
+- **1.4.0** - Added database and full-project backups
 - **1.3.0** - Added heartbeat/ping system, connection failure tracking, diagnostics commands, and reliability improvements
 - **1.2.0** - Added comprehensive server health monitoring
 - **1.1.0** - Enhanced error context and server information
