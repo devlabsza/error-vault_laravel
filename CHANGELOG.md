@@ -2,6 +2,12 @@
 
 All notable changes to the ErrorVault Laravel package will be documented in this file.
 
+## [1.5.0] - 2026-10-29
+
+### Added
+- Laravel 13 support (`illuminate/support` `^13.0`, Orchestra Testbench 11, PHPUnit 13). Laravel 10, 11 and 12 remain supported.
+- A Testbench test that boots the package inside a Laravel app and checks its services, commands, exception reporting and scheduled tasks. CI now runs it against Laravel 10, 11, 12 and 13.
+
 ## [1.4.2] - 2026-09-17
 
 ### Security
