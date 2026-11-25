@@ -2,6 +2,20 @@
 
 All notable changes to the ErrorVault Laravel package will be documented in this file.
 
+## [1.5.1] - 2026-11-26
+
+### Fixed
+- **The app's own exception settings were skipped.** The package replaced Laravel's exception handler with a wrapper. On Laravel 11, 12 and 13, `->withExceptions()` in `bootstrap/app.php` only runs for Laravel's own handler class, so with the package installed it never ran, and no error said so. Report and render callbacks, `dontReport` and `ignore` rules, and anything else configured there were lost. The package now registers a `reportable()` callback on the app's handler and leaves the handler in place, so that configuration runs again.
+- **A failure while reporting to Error-Vault could replace the original error.** Any exception thrown while building or sending the report now stays inside the package, and Laravel still logs the original error.
+
+### Changed
+- Error-Vault now sees exceptions through Laravel's normal reporting steps:
+  - An exception with its own `report()` method that doesn't return `false` is reported only by that method.
+  - A `reportable()` callback the app registers earlier that stops reporting (`->stop()` or returning `false`) also stops Error-Vault.
+- Error-Vault is hooked in only through a handler's `reportable()` method. Laravel's own handler has it, and so do wrappers that pass it through, such as Collision's in the console. A custom handler without `reportable()` no longer reports to Error-Vault.
+- Each exception is sent to Error-Vault at most once, even if the app reports the same exception object twice.
+- `ErrorVault\Laravel\Exceptions\ErrorVaultExceptionHandler` is no longer used and is deprecated. It will be removed in 2.0.
+
 ## [1.5.0] - 2026-10-29
 
 ### Added

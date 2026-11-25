@@ -6,6 +6,10 @@ use ErrorVault\Laravel\ErrorVault;
 use Illuminate\Contracts\Debug\ExceptionHandler;
 use Throwable;
 
+/**
+ * @deprecated 1.5.1 No longer registered: the service provider now adds a
+ * reportable() callback to the app's own handler. Removed in 2.0.
+ */
 class ErrorVaultExceptionHandler implements ExceptionHandler
 {
     /**

@@ -4,6 +4,7 @@ namespace ErrorVault\Laravel;
 
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Contracts\Debug\ExceptionHandler;
+use Throwable;
 use Illuminate\Console\Scheduling\Schedule;
 use ErrorVault\Laravel\Console\RunBackupCommand;
 use ErrorVault\Laravel\Console\SendHealthReportCommand;
@@ -14,6 +15,12 @@ use ErrorVault\Laravel\Http\Middleware\TrackHealthRequests;
 
 class ErrorVaultServiceProvider extends ServiceProvider
 {
+    /** Handlers that already have the Error-Vault reportable() hook. */
+    private static ?\WeakMap $hookedHandlers = null;
+
+    /** Exceptions already sent, so a hook added twice can't send one twice. */
+    private static ?\WeakMap $reportedExceptions = null;
+
     /**
      * Register services.
      */
@@ -79,12 +86,44 @@ class ErrorVaultServiceProvider extends ServiceProvider
     }
 
     /**
-     * Register the exception handler
+     * Report exceptions to Error-Vault through the app's own handler.
+     *
+     * Hooking in with reportable() keeps the handler the app built. Swapping it
+     * for a wrapper hid it from withExceptions() in bootstrap/app.php, whose
+     * callback is registered for the concrete Handler class and then never ran.
+     * Laravel's own filters (dontReport, ignore, shouldReport) apply before the
+     * callback, and returning nothing lets Laravel go on to log as usual.
+     *
+     * Wrappers that forward reportable() to the app's handler, such as
+     * Collision's in the console, are hooked through that method too.
      */
     protected function registerExceptionHandler(): void
     {
-        $this->app->extend(ExceptionHandler::class, function ($handler, $app) {
-            return new Exceptions\ErrorVaultExceptionHandler($handler, $app->make(ErrorVault::class));
+        // callAfterResolving() can hand over the same handler twice (once from the
+        // resolving hook, once directly), a wrapper may pass reportable() to a
+        // handler that already has the hook, and the provider may be registered
+        // more than once, so guard the handler and the exception across instances.
+        $hooked = self::$hookedHandlers ??= new \WeakMap();
+        $reported = self::$reportedExceptions ??= new \WeakMap();
+
+        $this->callAfterResolving(ExceptionHandler::class, function ($handler, $app) use ($hooked, $reported) {
+            if (! method_exists($handler, 'reportable') || isset($hooked[$handler])) {
+                return;
+            }
+            $hooked[$handler] = true;
+
+            $handler->reportable(function (Throwable $e) use ($app, $reported): void {
+                if (isset($reported[$e])) {
+                    return;
+                }
+                $reported[$e] = true;
+
+                try {
+                    $app->make(ErrorVault::class)->report($e);
+                } catch (Throwable) {
+                    // Never let reporting to Error-Vault replace the error being reported.
+                }
+            });
         });
     }
 
