@@ -3,6 +3,7 @@
 namespace ErrorVault\Laravel;
 
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Container\Container;
 use Illuminate\Contracts\Debug\ExceptionHandler;
 use Throwable;
 use Illuminate\Console\Scheduling\Schedule;
@@ -96,6 +97,10 @@ class ErrorVaultServiceProvider extends ServiceProvider
      *
      * Wrappers that forward reportable() to the app's handler, such as
      * Collision's in the console, are hooked through that method too.
+     *
+     * A handler swapped in later with $app->instance() isn't hooked, because
+     * instance() doesn't fire resolving callbacks. Laravel's own uses of that
+     * (withoutExceptionHandling() in tests) are meant to bypass reporting.
      */
     protected function registerExceptionHandler(): void
     {
@@ -106,20 +111,21 @@ class ErrorVaultServiceProvider extends ServiceProvider
         $hooked = self::$hookedHandlers ??= new \WeakMap();
         $reported = self::$reportedExceptions ??= new \WeakMap();
 
-        $this->callAfterResolving(ExceptionHandler::class, function ($handler, $app) use ($hooked, $reported) {
+        $this->callAfterResolving(ExceptionHandler::class, function ($handler) use ($hooked, $reported) {
             if (! method_exists($handler, 'reportable') || isset($hooked[$handler])) {
                 return;
             }
             $hooked[$handler] = true;
 
-            $handler->reportable(function (Throwable $e) use ($app, $reported): void {
+            $handler->reportable(function (Throwable $e) use ($reported): void {
                 if (isset($reported[$e])) {
                     return;
                 }
                 $reported[$e] = true;
 
                 try {
-                    $app->make(ErrorVault::class)->report($e);
+                    // The current container, so Octane uses the request's sandbox.
+                    Container::getInstance()->make(ErrorVault::class)->report($e);
                 } catch (Throwable) {
                     // Never let reporting to Error-Vault replace the error being reported.
                 }

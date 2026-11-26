@@ -86,15 +86,14 @@ class ServiceProviderTest extends TestCase
     }
 
     /**
-     * Collision resolves the app's handler early, then binds its own wrapper,
-     * which passes reportable() through. Reporting must still reach Error-Vault.
+     * A wrapper bound before the hook is added (like Collision's console
+     * handler) must be hooked through its own reportable(). The inner handler
+     * is built with `new` so nothing hooks it directly.
      */
     public function test_reports_through_a_wrapper_that_passes_reportable_through(): void
     {
         Http::fake();
-        $this->app->forgetInstance(ExceptionHandler::class);
-        $inner = $this->app->make(Handler::class);
-        $this->app->instance(ExceptionHandler::class, new PassThroughHandler($inner));
+        $this->app->instance(ExceptionHandler::class, new PassThroughHandler(new Handler($this->app)));
 
         $provider = new ErrorVaultServiceProvider($this->app);
         (fn () => $this->registerExceptionHandler())->call($provider);
@@ -105,19 +104,22 @@ class ServiceProviderTest extends TestCase
     }
 
     /**
-     * When the handler is first built inside callAfterResolving() (as with
-     * Collision's console wrapper), Laravel runs the callback twice.
+     * Collision's flow: the app's handler is resolved (and hooked) first, then
+     * re-bound inside a wrapper that forwards reportable() to that same handler,
+     * which gets hooked a second time. Each exception must still be sent once.
      */
-    public function test_handler_built_during_registration_reports_once(): void
+    public function test_handler_hooked_directly_and_through_a_wrapper_reports_once(): void
     {
         Http::fake();
-        $this->app->forgetInstance(ExceptionHandler::class);
-        $inner = $this->app->make(Handler::class);
+        $inner = $this->app->make(ExceptionHandler::class);
+        $this->assertTrue($this->app->resolved(ExceptionHandler::class));
         $this->app->singleton(ExceptionHandler::class, fn () => new PassThroughHandler($inner));
 
         $provider = new ErrorVaultServiceProvider($this->app);
         (fn () => $this->registerExceptionHandler())->call($provider);
-        $this->app->make(ExceptionHandler::class)->report(new RuntimeException('once'));
+        $handler = $this->app->make(ExceptionHandler::class);
+        $this->assertInstanceOf(PassThroughHandler::class, $handler);
+        $handler->report(new RuntimeException('once'));
 
         Http::assertSentCount(1);
     }

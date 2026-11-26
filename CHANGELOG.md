@@ -14,6 +14,7 @@ All notable changes to the ErrorVault Laravel package will be documented in this
   - A `reportable()` callback the app registers earlier that stops reporting (`->stop()` or returning `false`) also stops Error-Vault.
 - Error-Vault is hooked in only through a handler's `reportable()` method. Laravel's own handler has it, and so do wrappers that pass it through, such as Collision's in the console. A custom handler without `reportable()` no longer reports to Error-Vault.
 - Each exception is sent to Error-Vault at most once, even if the app reports the same exception object twice.
+- A handler swapped in after boot with `$app->instance()` isn't hooked, since `instance()` doesn't fire resolving callbacks. Binding one with `bind()` or `singleton()` is hooked when it's resolved.
 - `ErrorVault\Laravel\Exceptions\ErrorVaultExceptionHandler` is no longer used and is deprecated. It will be removed in 2.0.
 
 ## [1.5.0] - 2026-10-29
